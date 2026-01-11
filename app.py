@@ -3672,6 +3672,13 @@ def download_and_convert(url,
         ]
         if use_cookies and os.path.exists(COOKIES_FILE):
             yt_dlp_cmd.extend(["--cookies", COOKIES_FILE])
+        
+        # SPECIAL GOFILE AUTH: Pass API token to yt-dlp if it's a Gofile link
+        if "gofile.io" in url and GOFILE_API_TOKEN:
+            yt_dlp_cmd.extend(["--add-header", f"Authorization:Bearer {GOFILE_API_TOKEN}"])
+            # Also add the token as a cookie for the extractor
+            yt_dlp_cmd.extend(["--add-header", f"Cookie:accountToken={GOFILE_API_TOKEN}"])
+            
         run_command_with_progress(yt_dlp_cmd, "Downloading with yt-dlp...", q)
         q.put({"stage": "Download Complete", "percent": 100})
         found_files = [
