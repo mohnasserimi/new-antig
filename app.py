@@ -3674,10 +3674,34 @@ def download_and_convert(url,
             yt_dlp_cmd.extend(["--cookies", COOKIES_FILE])
         
         # SPECIAL GOFILE AUTH: Pass API token to yt-dlp if it's a Gofile link
+        gofile_cookie_file = None
         if "gofile.io" in url and GOFILE_API_TOKEN:
-            yt_dlp_cmd.extend(["--add-header", f"Authorization:Bearer {GOFILE_API_TOKEN}"])
-            # Also add the token as a cookie for the extractor
-            yt_dlp_cmd.extend(["--add-header", f"Cookie:accountToken={GOFILE_API_TOKEN}"])
+            try:
+                # Create a temporary Netscape cookie file for Gofile
+                import tempfile
+                import time
+                
+                fd, gofile_cookie_file = tempfile.mkstemp(suffix=".txt", prefix="gofile_cookies_")
+                os.close(fd)
+                
+                # Netscape cookie format: domain, flag, path, secure, expiration, name, value
+                # Expiration set to 1 year from now
+                expiry = int(time.time()) + 31536000
+                cookie_content = [
+                    "# Netscape HTTP Cookie File",
+                    f".gofile.io\tTRUE\t/\tTRUE\t{expiry}\taccountToken\t{GOFILE_API_TOKEN}",
+                    f"gofile.io\tTRUE\t/\tTRUE\t{expiry}\taccountToken\t{GOFILE_API_TOKEN}"
+                ]
+                
+                with open(gofile_cookie_file, "w") as f:
+                    f.write("\n".join(cookie_content) + "\n")
+                
+                # Use the new cookie file instead of headers
+                yt_dlp_cmd.extend(["--cookies", gofile_cookie_file])
+                yt_dlp_cmd.extend(["--add-header", f"Authorization:Bearer {GOFILE_API_TOKEN}"])
+                q.put({"log": "Using temporary Gofile cookie file for authentication."})
+            except Exception as ce:
+                q.put({"log": f"Warning: Failed to create Gofile cookie file: {ce}"})
             
         run_command_with_progress(yt_dlp_cmd, "Downloading with yt-dlp...", q)
         q.put({"stage": "Download Complete", "percent": 100})
@@ -3727,10 +3751,18 @@ def download_and_convert(url,
         if actual_tmp_path and os.path.exists(actual_tmp_path):
             try:
                 os.remove(actual_tmp_path)
-            except OSError:
+            except:
                 pass
-        if not (upload_pixeldrain or upload_gofile):
-            q.put({"log": "DONE"})
+        
+        # Cleanup temporary Gofile cookie file
+        if gofile_cookie_file and os.path.exists(gofile_cookie_file):
+            try:
+                os.remove(gofile_cookie_file)
+            except:
+                pass
+                
+        current_process = None
+        q.put({"log": "DONE"})
 
 
 def manual_merge_worker(url,
