@@ -3411,19 +3411,23 @@ def download_file_directly(url,
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Referer': referer if referer else 'https://gofile.io/',
-                    'Origin': 'https://gofile.io'
+                    'Origin': 'https://gofile.io',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Connection': 'keep-alive'
                 }
                 
                 # SPECIAL GOFILE BYPASS: Get a fresh guest token for direct downloads
                 if "gofile.io" in url:
                     try:
                         q.put({"log": "Fetching Gofile guest token for direct download..."})
-                        token_resp = requests.get("https://api.gofile.io/createAccount", headers=headers, timeout=10)
+                        token_resp = requests.post("https://api.gofile.io/accounts", headers=headers, timeout=10)
                         if token_resp.status_code == 200:
                             guest_token = token_resp.json().get("data", {}).get("token")
                             if guest_token:
                                 headers["Authorization"] = f"Bearer {guest_token}"
                                 headers["Cookie"] = f"accountToken={guest_token}"
+                                headers["wt-token"] = guest_token
                                 q.put({"log": "✅ Got Gofile guest token."})
                     except Exception as te:
                         q.put({"log": f"Note: Failed to get Gofile guest token: {te}"})
@@ -3438,6 +3442,7 @@ def download_file_directly(url,
                     
                     # Detect if we were redirected back to the Gofile landing page
                     if "gofile.io/d/" in response.url:
+                        q.put({"log": f"DEBUG: Redirected to {response.url}"})
                         raise ValueError("Gofile redirected to landing page. Direct download blocked. Try opening the link in browser.")
 
                     # Download immediately while response is open
@@ -5865,15 +5870,36 @@ def gofile_add_to_local():
         # Log for debugging
         print(f"DEBUG: Restoring Gofile from URL: {download_url}")
 
-        # Check if it's a direct Gofile download link (bypasses yt-dlp 401 errors)
-        if ".gofile.io/download/direct/" in download_url or ".gofile.io/download/web/" in download_url:
-            # Use Direct Download (requests) for direct links
-            # Pass the landing page link as Referer to bypass Gofile protection
+        # Use YouTube Downloader logic (yt-dlp) for Gofile links
+        # This is more robust as yt-dlp handles Gofile's complex redirection and token logic
+        if "gofile.io" in download_url:
+            # If it's a direct link, try to use the landing page instead for yt-dlp
+            if "/download/" in download_url:
+                file_id = request.form.get("fileId")
+                if file_id:
+                    download_url = f"https://gofile.io/d/{file_id}"
+            
+            args = (
+                download_url,    # url
+                "b",             # video_id
+                None,            # audio_id
+                filename,        # filename
+                "none",          # codec
+                "", "", "", "", "", "", "", 
+                False,           # force_stereo
+                progress_queue,  # q
+                False,           # is_muxed
+                False,           # upload_pixeldrain
+                False            # upload_gofile
+            )
+            start_task(download_and_convert, args)
+        elif ".gofile.io/download/direct/" in download_url or ".gofile.io/download/web/" in download_url:
+            # Fallback for direct links that aren't recognized as gofile.io
             landing_page = request.form.get("link") or "https://gofile.io/"
             args = (download_url, progress_queue, False, False, "", "", landing_page)
             start_task(download_file_directly, args)
         else:
-            # Use YouTube Downloader logic (yt-dlp) for landing pages
+            # Standard yt-dlp logic
             args = (
                 download_url,    # url
                 "b",             # video_id
