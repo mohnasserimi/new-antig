@@ -15,15 +15,14 @@ RUN curl -fsSL https://deno.land/x/install/install.sh | sh
 # 3. Set up a working directory
 WORKDIR /app
 
-# 4. Create a non-root user (Hugging Face best practice)
+# 4. Create a non-root user
 RUN useradd -m -u 1000 user
 
-# 5. Copy Files
-COPY requirements.txt .
-COPY app.py .
-# Create downloads folder and ensure permissions
-RUN mkdir downloads && \
-    chown -R user:user /app
+# 5. Copy ALL project files (includes youtube_cookies.txt and any other needed files)
+COPY --chown=user:user . .
+
+# 6. Ensure the downloads folder exists with correct permissions
+RUN mkdir -p /app/downloads && chown -R user:user /app
 
 # 6. Switch to non-root user
 USER user
