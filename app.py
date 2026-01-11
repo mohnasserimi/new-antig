@@ -3,11 +3,40 @@ import subprocess
 import os
 import re
 import json
+
+def save_to_gofile_history(filename, download_page, size, file_id=None, direct_link=None):
+    """Save upload info to local history file"""
+    try:
+        import time
+        history = []
+        if os.path.exists(GOFILE_HISTORY_FILE):
+            with open(GOFILE_HISTORY_FILE, 'r') as f:
+                history = json.load(f)
+        
+        entry = {
+            "name": filename,
+            "link": download_page,
+            "id": file_id or download_page.split('/')[-1],
+            "direct_link": direct_link,
+            "size": size,
+            "createTime": int(time.time()),
+            "type": "file"
+        }
+        # Avoid duplicates
+        if not any(item.get("link") == download_page for item in history):
+            history.insert(0, entry) # Newest first
+            # Keep last 100 uploads
+            history = history[:100]
+            with open(GOFILE_HISTORY_FILE, 'w') as f:
+                json.dump(history, f, indent=4)
+    except Exception as e:
+        print(f"Error saving to Gofile history: {e}")
+
 import threading
 import queue
 import shutil
 import sys
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
 from datetime import timedelta
 
 # --- ADD DENO TO PATH ---
@@ -188,13 +217,25 @@ app.secret_key = os.environ.get("SESSION_SECRET",
 # Global for current encoding process
 current_process = None
 
+# Jinja Filter for Date Formatting
+from datetime import datetime
+@app.template_filter('datetime')
+def format_datetime(value):
+    if not value: return ""
+    try:
+        return datetime.fromtimestamp(value).strftime('%Y-%m-%d %H:%M')
+    except:
+        return str(value)
+
 # -----------------------------
 # Simple one-password protection
 # -----------------------------
-APP_PASSWORD = os.environ.get("APP_PASSWORD")
-if not APP_PASSWORD:
-    print("⚠️ WARNING: APP_PASSWORD not set. Using default '1234'. PLEASE SET THIS IN PRODUCTION.")
-    APP_PASSWORD = "1234"
+# Priority 1: Environment variable 'APP_PASSWORD'
+# Priority 2: Hardcoded default '1234'
+APP_PASSWORD = os.environ.get("APP_PASSWORD", "1234")
+
+if APP_PASSWORD == "1234":
+    print("⚠️ WARNING: Using default password '1234'. Please set APP_PASSWORD environment variable for security.")
 
 # Admin username (hardcoded)
 ADMIN_USERNAME = "admin"
@@ -372,6 +413,7 @@ def suppress_health_logging(response):
 # -----------------------------
 FLASK_PORT = 5000
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), "downloads")
+GOFILE_HISTORY_FILE = os.path.join(os.getcwd(), "gofile_history.json")
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 COOKIES_FILE = os.path.join(os.getcwd(), "youtube_cookies.txt")
@@ -819,7 +861,8 @@ TEMPLATE = """
                 document.addEventListener('DOMContentLoaded', updatePresetOptions);
             </script>
             <br>
-            <label><input type="checkbox" name="upload_pixeldrain" value="true"> Upload to Pixeldrain after completion</label><br><br>
+            <label><input type="checkbox" name="upload_pixeldrain" value="true"> Upload to Pixeldrain after completion</label><br>
+            <label><input type="checkbox" name="upload_gofile" value="true"> Upload to Gofile after completion</label><br><br>
                 <button type="submit" name="action" value="download" class="encode">▶️ Download & Convert</button>
                 <h3 style="margin-top: 20px;">📋 Available Formats:</h3>
                 <pre>{{ formats }}</pre>
@@ -1194,7 +1237,8 @@ TEMPLATE = """
                 });
             </script>
             <br>
-            <label><input type="checkbox" name="yt_upload_pixeldrain" value="true"> Upload to Pixeldrain after completion</label><br><br>
+            <label><input type="checkbox" name="yt_upload_pixeldrain" value="true"> Upload to Pixeldrain after completion</label><br>
+            <label><input type="checkbox" name="yt_upload_gofile" value="true"> Upload to Gofile after completion</label><br><br>
                 <button type="submit" name="action" value="yt_download" class="encode">▶️ Download & Convert</button>
                 <h3 style="margin-top: 20px;">📋 Available Formats:</h3>
                 <pre>{{ yt_formats }}</pre>
@@ -1226,6 +1270,7 @@ TEMPLATE = """
                 <input type="text" name="direct_password" placeholder="e.g., 1234" size="80"><br>
 
                 <label><input type="checkbox" name="upload_pixeldrain_direct" value="true"> ☁️ Upload to Pixeldrain after download</label><br>
+                <label><input type="checkbox" name="upload_gofile_direct" value="true"> 📤 Upload to Gofile after download</label><br>
                 <button type="submit" name="action" value="direct_download">📥 Download to Server</button>
                 <button type="submit" name="action" value="direct_upload_pixeldrain" class="upload">☁️ Upload to Pixeldrain</button>
             </form>
@@ -1288,7 +1333,8 @@ TEMPLATE = """
                     <label>Filename (will be saved as .mkv):</label><br>
                     <input type="text" name="manual_filename" value="{{ manual_filename }}" required><br><br>
                     <label><input type="checkbox" name="upload_pixeldrain" value="true"> Upload to Pixeldrain after completion</label><br>
-                    <label><input type="checkbox" name="upload_4stream" value="true"> 🎬 Upload to 4stream after completion</label><br><br>
+                    <label><input type="checkbox" name="upload_4stream" value="true"> 🎬 Upload to 4stream after completion</label><br>
+                    <label><input type="checkbox" name="upload_gofile" value="true"> Upload to Gofile after completion</label><br><br>
                     <button type="submit" name="action" value="manual_merge" class="encode">🔗 Merge & Download</button>
                 {% endif %}
             </form>
@@ -1819,7 +1865,8 @@ ENCODE_TEMPLATE = """
         </script>
         <br>
         <label><input type="checkbox" name="upload_pixeldrain" value="true"> Upload to Pixeldrain after completion</label><br>
-        <label><input type="checkbox" name="upload_4stream" value="true" {% if upload_4stream %}checked{% endif %}> Upload to 4stream after completion</label><br><br>
+        <label><input type="checkbox" name="upload_4stream" value="true" {% if upload_4stream %}checked{% endif %}> Upload to 4stream after completion</label><br>
+        <label><input type="checkbox" name="upload_gofile" value="true"> Upload to Gofile after completion</label><br><br>
         <button type="submit">▶️ Start Encoding</button>
         <a href="{{ url_for('list_files', current_path=current_path) }}">← Back to Files</a>
         </form>
@@ -1954,6 +2001,121 @@ ENCODE_TEMPLATE = """
         {% endif %}
     });
 </script>
+</body>
+</html>
+"""
+
+
+GOFILE_MANAGER_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gofile Manager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', 'Roboto', sans-serif; line-height: 1.6; background: #f0f2f5; color: #1a1a1a; padding: 15px; }
+        .container { max-width: 1100px; margin: 0 auto; background: white; padding: 25px; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+        h1 { font-size: 28px; color: #9b59b6; margin-bottom: 20px; text-align: center; }
+        .back-link { display: inline-block; margin-bottom: 20px; color: #0066cc; text-decoration: none; font-weight: 600; }
+        
+        .premium-note { background: #fff8e1; border-left: 5px solid #ffc107; padding: 15px; border-radius: 8px; margin-bottom: 25px; font-size: 14px; }
+        .premium-note a { color: #d32f2f; font-weight: bold; }
+
+        .file-list { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .file-list th, .file-list td { padding: 15px; text-align: left; border-bottom: 1px solid #eee; }
+        .file-list th { background: #f8f9fa; color: #7f8c8d; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }
+        .file-list tr:hover { background: #fcfaff; }
+        
+        .btn { padding: 8px 15px; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; text-decoration: none; color: white; transition: all 0.2s; display: inline-block; margin-right: 5px; }
+        .btn-blue { background: #3498db; }
+        .btn-blue:hover { background: #2980b9; }
+        .btn-green { background: #27ae60; }
+        .btn-green:hover { background: #219150; }
+        .btn-red { background: #e74c3c; }
+        .btn-red:hover { background: #c0392b; }
+        
+        .status-msg { padding: 10px; border-radius: 6px; margin-bottom: 20px; text-align: center; }
+        .status-success { background: #e8f5e9; color: #2e7d32; }
+        .status-error { background: #ffebee; color: #c62828; }
+        
+        .source-tag { font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #eee; margin-left: 5px; color: #666; vertical-align: middle; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>📤 Gofile Upload Manager</h1>
+    <a href="{{ url_for('list_files') }}" class="back-link">← Back to Local File Manager</a>
+    
+    <div class="premium-note">
+        <strong>⚠️ Account Restriction:</strong> Gofile API restricts full account listings to <strong>Premium accounts only</strong>. 
+        Below we show files uploaded using this app. To see all files, visit the <a href="https://gofile.io/login" target="_blank">Gofile Website</a>.
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% for category, message in messages %}
+            <div class="status-msg status-{% if category == 'error' %}error{% else %}success{% endif %}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endwith %}
+
+    <div style="background: #f8f9fa; border: 1px dashed #9b59b6; padding: 15px; border-radius: 12px; margin-bottom: 25px;">
+        <h4 style="color: #9b59b6; margin-bottom: 10px;">🛠️ Manual Restore (For older files)</h4>
+        <form method="POST" action="{{ url_for('gofile_add_to_local') }}" style="display: flex; gap: 10px;">
+            <input type="text" name="direct_link" placeholder="Paste direct link (https://storeX.gofile.io/download/direct/...)" style="margin:0; flex-grow: 1;">
+            <input type="hidden" name="filename" value="manual_restore.mkv">
+            <button type="submit" class="btn btn-green" style="margin:0;">Restore Manually</button>
+        </form>
+        <p style="font-size: 11px; color: #666; margin-top: 8px;">
+            If an old file fails to restore, open it in your browser, copy the real download link, and paste it here.
+        </p>
+    </div>
+
+    <h3>📋 Recent Uploads (Local History)</h3>
+    <table class="file-list">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Size</th>
+                <th>Uploaded</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if items %}
+                {% for item in items %}
+                <tr>
+                    <td><strong>{{ item.name }}</strong> {% if item.is_remote %}<span class="source-tag">Account</span>{% else %}<span class="source-tag">App History</span>{% endif %}</td>
+                    <td>{{ (item.size / 1024 / 1024)|round(2) }} MB</td>
+                    <td>{{ item.createTime|datetime }}</td>
+                    <td>
+                        <a href="{{ item.link }}" target="_blank" class="btn btn-blue">Open</a>
+                        <form method="POST" action="{{ url_for('gofile_add_to_local') }}" style="display:inline;">
+                            <input type="hidden" name="fileId" value="{{ item.id }}">
+                            <input type="hidden" name="filename" value="{{ item.name }}">
+                            <input type="hidden" name="link" value="{{ item.link }}">
+                            <input type="hidden" name="direct_link" value="{{ item.direct_link or '' }}">
+                            <button type="submit" class="btn btn-green">Add to File List</button>
+                        </form>
+                        {% if item.is_remote %}
+                        <form method="POST" action="{{ url_for('gofile_delete') }}" style="display:inline;" onsubmit="return confirm('Really delete this file from Gofile?');">
+                            <input type="hidden" name="contentId" value="{{ item.id }}">
+                            <button type="submit" class="btn btn-red">Delete</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr>
+                    <td colspan="4" style="text-align: center; padding: 40px; color: #95a5a6;">No upload history found. Upload a file to see it here!</td>
+                </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
 </body>
 </html>
 """
@@ -2874,21 +3036,22 @@ def upload_to_gofile(file_path, filename, q):
 
         q.put({"stage": "Getting Gofile upload server...", "percent": 10})
 
-        # Step 1: Get the best upload server
+        # Step 1: Get the list of upload servers
         server_response = requests.get(
-            "https://api.gofile.io/getServer",
+            "https://api.gofile.io/servers",
             headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
             timeout=10
         )
         server_response.raise_for_status()
         server_data = server_response.json()
 
-        if server_data.get("status") != "ok":
-            q.put({"error": f"Failed to get upload server: {server_data.get('status')}"})
+        if server_data.get("status") != "ok" or not server_data.get("data", {}).get("servers"):
+            q.put({"error": f"Failed to get upload server: {server_data.get('status', 'No servers available')}"})
             q.put({"log": "DONE"})
             return
 
-        upload_server = server_data["data"]["server"]
+        # Pick the first available server
+        upload_server = server_data["data"]["servers"][0]["name"]
         q.put({"stage": f"Got server '{upload_server}', uploading file...", "percent": 30})
 
         # Step 2: Upload file to the server
@@ -2919,20 +3082,27 @@ def upload_to_gofile(file_path, filename, q):
 
         response.raise_for_status()
         upload_result = response.json()
+        q.put({"log": f"Gofile Raw Result: {json.dumps(upload_result)}"})
 
         if upload_result.get("status") == "ok":
             download_page = upload_result["data"]["downloadPage"]
-            file_id = upload_result["data"]["fileId"]
+            # Gofile API sometimes uses 'fileId', sometimes 'code'
+            file_id_rec = upload_result["data"].get("fileId") or upload_result["data"].get("code")
+            
+            # Construct direct link
+            direct_link = None
+            if upload_server and file_id_rec:
+                safe_url_name = quote(filename)
+                direct_link = f"https://{upload_server}.gofile.io/download/direct/{file_id_rec}/{safe_url_name}"
+                q.put({"log": f"Generated direct link: {direct_link}"})
+            
+            save_to_gofile_history(filename, download_page, file_size, file_id_rec, direct_link)
             
             q.put({"stage": "✅ Gofile Upload Complete!", "percent": 100})
             q.put({
                 "log": f"Success! File uploaded to Gofile: {filename}",
                 "final_url": download_page
             })
-            
-            # Store URL in session for display
-            from flask import session
-            session['last_upload_url'] = download_page
         else:
             q.put({"error": f"Upload failed: {upload_result.get('status', 'Unknown error')}"})
             
@@ -3048,7 +3218,8 @@ def encode_file(input_path,
                 enable_vmaf,
                 q,
                 upload_pixeldrain=False,
-                upload_4stream=False):
+                upload_4stream=False,
+                upload_gofile=False):
     global current_process
     if scale:
         scale_map = {
@@ -3189,17 +3360,20 @@ def encode_file(input_path,
             upload_to_pixeldrain(output_path, os.path.basename(safe_output), q)
         elif upload_4stream:
             upload_to_4stream(output_path, os.path.basename(safe_output), q)
+        if upload_gofile:
+            upload_to_gofile(output_path, os.path.basename(safe_output), q)
     except Exception as e:
         q.put({"error": str(e)})
     finally:
         current_process = None
-        if not (upload_pixeldrain or upload_4stream):
+        if not (upload_pixeldrain or upload_4stream or upload_gofile):
             q.put({"log": "DONE"})
 
 
 def download_file_directly(url,
                            q,
                            upload_pixeldrain_direct=False,
+                           upload_gofile_direct=False,
                            username="",
                            password=""):
     try:
@@ -3346,6 +3520,8 @@ def download_file_directly(url,
         q.put({"stage": "✅ Download complete!", "percent": 100})
         if upload_pixeldrain_direct and final_path and safe_name:
             upload_to_pixeldrain(final_path, safe_name, q)
+        if upload_gofile_direct and final_path and safe_name:
+            upload_to_gofile(final_path, safe_name, q)
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 401:
             q.put({
@@ -3357,7 +3533,7 @@ def download_file_directly(url,
     except Exception as e:
         q.put({"error": f"Direct download failed: {str(e)}"})
     finally:
-        if not upload_pixeldrain_direct:
+        if not (upload_pixeldrain_direct or upload_gofile_direct):
             q.put({"log": "DONE"})
 
 
@@ -3429,6 +3605,7 @@ def download_and_convert(url,
                          q,
                          is_muxed,
                          upload_pixeldrain=False,
+                         upload_gofile=False,
                          aq_mode="1",
                          variance_boost="1",
                          tiles="2x2",
@@ -3497,6 +3674,9 @@ def download_and_convert(url,
         if upload_pixeldrain and os.path.exists(final_file_to_upload):
             upload_to_pixeldrain(final_file_to_upload,
                                  os.path.basename(final_file_to_upload), q)
+        if upload_gofile and os.path.exists(final_file_to_upload):
+            upload_to_gofile(final_file_to_upload,
+                             os.path.basename(final_file_to_upload), q)
     except Exception as e:
         q.put({"error": str(e)})
     finally:
@@ -3505,7 +3685,7 @@ def download_and_convert(url,
                 os.remove(actual_tmp_path)
             except OSError:
                 pass
-        if not upload_pixeldrain:
+        if not (upload_pixeldrain or upload_gofile):
             q.put({"log": "DONE"})
 
 
@@ -3515,7 +3695,8 @@ def manual_merge_worker(url,
                         filename,
                         q,
                         upload_pixeldrain=False,
-                        upload_4stream=False):
+                        upload_4stream=False,
+                        upload_gofile=False):
     safe_name = get_safe_filename(filename)
     base_name, _ = os.path.splitext(safe_name)
     final_path = os.path.join(DOWNLOAD_FOLDER, base_name + ".mkv")
@@ -3540,10 +3721,12 @@ def manual_merge_worker(url,
             upload_to_pixeldrain(final_path, os.path.basename(final_path), q)
         if upload_4stream and os.path.exists(final_path):
             upload_to_4stream(final_path, os.path.basename(final_path), q)
+        if upload_gofile and os.path.exists(final_path):
+            upload_to_gofile(final_path, os.path.basename(final_path), q)
     except Exception as e:
         q.put({"error": str(e)})
     finally:
-        if not (upload_pixeldrain or upload_4stream):
+        if not (upload_pixeldrain or upload_4stream or upload_gofile):
             q.put({"log": "DONE"})
 
 
@@ -3695,6 +3878,7 @@ def index_post():
                     request.form.get("fps"), request.form.get("scale"),
                     request.form.get("force_stereo") == "true", progress_queue,
                     is_muxed, request.form.get("upload_pixeldrain") == "true",
+                    request.form.get("upload_gofile") == "true",
                     request.form.get("aq_mode", "1"),
                     request.form.get("variance_boost",
                                      "1"), request.form.get("tiles", "2x2"),
@@ -3703,6 +3887,7 @@ def index_post():
         elif action == "direct_download":
             args = (request.form.get("direct_url"), progress_queue,
                     request.form.get("upload_pixeldrain_direct") == "true",
+                    request.form.get("upload_gofile_direct") == "true",
                     request.form.get("direct_username", ""),
                     request.form.get("direct_password", ""))
             start_task(download_file_directly, args)
@@ -3715,7 +3900,8 @@ def index_post():
                     request.form.get("manual_audio_id"),
                     request.form.get("manual_filename"), progress_queue,
                     request.form.get("upload_pixeldrain") == "true",
-                    request.form.get("upload_4stream") == "true")
+                    request.form.get("upload_4stream") == "true",
+                    request.form.get("upload_gofile") == "true")
             start_task(manual_merge_worker, args)
         pass  # current_tab set earlier
     return render_template_string(TEMPLATE, **form_data)
@@ -3818,6 +4004,7 @@ def youtube_download():
                 request.form.get("yt_fps"), request.form.get("yt_scale"),
                 request.form.get("yt_force_stereo") == "true", progress_queue,
                 is_muxed, request.form.get("yt_upload_pixeldrain") == "true",
+                request.form.get("yt_upload_gofile") == "true",
                 request.form.get("yt_aq_mode", "1"),
                 request.form.get("yt_variance_boost",
                                  "1"), request.form.get("yt_tiles", "2x2"),
@@ -4104,7 +4291,10 @@ def list_files(current_path=""):
 <body>
 <div class="container">
     <h1>Downloaded Files</h1>
-    <p><a href="{{ url_for('index') }}">← Back to Downloader</a></p>
+    <p>
+        <a href="{{ url_for('index') }}">← Back to Downloader</a> | 
+        <a href="{{ url_for('gofile_manager') }}" style="color: #9b59b6; font-weight: bold;">📊 Gofile Manager</a>
+    </p>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
         {% for category, message in messages %}
@@ -5118,7 +5308,8 @@ def encode_file_post(filepath):
             request.form.get("tiles",
                              "2x2"), request.form.get("enable_vmaf") == "true",
             progress_queue, request.form.get("upload_pixeldrain") == "true",
-            request.form.get("upload_4stream") == "true")
+            request.form.get("upload_4stream") == "true",
+            request.form.get("upload_gofile") == "true")
     start_task(encode_file, args)
     return render_template_string(
         ENCODE_TEMPLATE,
@@ -5502,6 +5693,174 @@ def batch_upload_gofile():
         operation_title=f"Batch Uploading {len(files)} files to Gofile",
         download_started=True,
         current_path="")
+
+
+
+@app.route("/gofile_manager")
+@login_required
+def gofile_manager():
+    # Load local history first
+    history = []
+    if os.path.exists(GOFILE_HISTORY_FILE):
+        try:
+            with open(GOFILE_HISTORY_FILE, 'r') as f:
+                history = json.load(f)
+        except: pass
+
+    if not GOFILE_API_TOKEN:
+        flash("Gofile API Token not configured", "error")
+        return render_template_string(GOFILE_MANAGER_TEMPLATE, items=history)
+
+    try:
+        # Try to fetch remote files, but don't crash if it fails (notPremium)
+        # 1. Get account ID from token
+        id_resp = requests.get(
+            "https://api.gofile.io/accounts/getid",
+            headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+            timeout=5
+        )
+        if id_resp.status_code == 200:
+            account_id = id_resp.json()["data"]["id"]
+            acc_resp = requests.get(
+                f"https://api.gofile.io/accounts/{account_id}",
+                headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+                timeout=5
+            )
+            if acc_resp.status_code == 200:
+                root_folder_id = acc_resp.json()["data"]["rootFolder"]
+                cont_resp = requests.get(
+                    f"https://api.gofile.io/contents/{root_folder_id}",
+                    headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+                    timeout=5
+                )
+                if cont_resp.status_code == 200:
+                    cont_data = cont_resp.json()
+                    if cont_data.get("status") == "ok":
+                        children = cont_data["data"].get("children", {})
+                        remote_items = []
+                        for cid, info in children.items():
+                            if info.get("type") == "file":
+                                info['is_remote'] = True
+                                remote_items.append(info)
+                        
+                        # Merge history and remote items (using links as keys to avoid duplicates)
+                        existing_links = {item.get("link") for item in remote_items}
+                        for h_item in history:
+                            if h_item.get("link") not in existing_links:
+                                h_item['is_remote'] = False
+                                remote_items.append(h_item)
+                        
+                        remote_items.sort(key=lambda x: x.get("createTime", 0), reverse=True)
+                        return render_template_string(GOFILE_MANAGER_TEMPLATE, items=remote_items)
+
+    except Exception as e:
+        print(f"Gofile remote sync failed: {e}")
+        
+    # Fallback to just history
+    for item in history: item['is_remote'] = False
+    return render_template_string(GOFILE_MANAGER_TEMPLATE, items=history)
+
+@app.route("/gofile_manager/delete", methods=["POST"])
+@login_required
+def gofile_delete():
+    content_id = request.form.get("contentId")
+    if not content_id:
+        flash("Content ID missing", "error")
+        return redirect(url_for('gofile_manager'))
+        
+    try:
+        # Gofile delete requires contentId and contentIds (plural) sometimes, or just a list
+        resp = requests.delete(
+            "https://api.gofile.io/deleteContent",
+            json={"contentsId": [content_id]},
+            headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+            timeout=10
+        )
+        resp.raise_for_status()
+        res = resp.json()
+        
+        if res.get("status") == "ok":
+            flash("File deleted from Gofile successfully.", "success")
+        else:
+            flash(f"Gofile Delete Error: {res.get('status')}", "error")
+            
+    except Exception as e:
+        flash(f"Failed to delete from Gofile: {str(e)}", "error")
+        
+    return redirect(url_for('gofile_manager'))
+
+
+@app.route("/gofile_manager/add_to_local", methods=["POST"])
+@login_required
+def gofile_add_to_local():
+    file_id = request.form.get("fileId")
+    filename = request.form.get("filename")
+    if not file_id or not filename:
+        flash("Missing file information", "error")
+        return redirect(url_for('gofile_manager'))
+        
+    # We download the file from Gofile to our local downloads folder
+    # We need the direct download link. If Gofile doesn't provide it easily, 
+    # we might need to use a trick or their specific download flow.
+    # Usually, a file's public link is gofile.io/d/CODE. 
+    # But for API, we might need to get the specific server link.
+    
+    try:
+        # Use direct link (from history) if available
+        # This bypasses Gofile's restricted folder API
+        download_url = request.form.get("direct_link")
+        
+        if not download_url or download_url == "":
+            # Fallback to landing page link
+            download_url = request.form.get("link")
+        
+        if not download_url:
+            # Last resort: try to fetch from API (likely to fail for non-premium)
+            resp = requests.get(
+                f"https://api.gofile.io/contents/{file_id}",
+                headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "ok":
+                    download_url = data["data"].get("link")
+        
+        if not download_url:
+            flash("Could not retrieve file download link. Try opening the Gofile link directly in your browser.", "error")
+            return redirect(url_for('gofile_manager'))
+
+        # Check if it's a direct Gofile download link
+        if ".gofile.io/download/direct/" in download_url:
+            # Use Direct Download (requests) for direct links to bypass yt-dlp 401s
+            args = (download_url, progress_queue, False, False, "", "")
+            start_task(download_file_directly, args)
+        else:
+            # Use YouTube Downloader logic (yt-dlp) for landing pages
+            args = (
+                download_url,    # url
+                "b",             # video_id
+                None,            # audio_id
+                filename,        # filename
+                "none",          # codec
+                "", "", "", "", "", "", "", 
+                False,           # force_stereo
+                progress_queue,  # q
+                False,           # is_muxed
+                False,           # upload_pixeldrain
+                False            # upload_gofile
+            )
+            start_task(download_and_convert, args)
+        
+        return render_template_string(
+            FILE_OPERATION_TEMPLATE,
+            operation_title=f"Restoring from Gofile: {filename}",
+            download_started=True,
+            current_path="")
+
+    except Exception as e:
+        flash(f"Error starting download: {str(e)}", "error")
+        return redirect(url_for('gofile_manager'))
 
 @app.route("/trim/<path:filepath>")
 def trim_page(filepath):
