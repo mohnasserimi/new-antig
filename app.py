@@ -396,6 +396,10 @@ if "key=" in _api_key_raw_alt:
 else:
     UP4STREAM_API_KEY_ALT = _api_key_raw_alt
 
+# Gofile API Configuration  
+GOFILE_ACCOUNT_ID = os.environ.get("GOFILE_ACCOUNT_ID") or "a27d5ffc-1648-46d7-af7d-de1c2bb27dd2"
+GOFILE_API_TOKEN = os.environ.get("GOFILE_API_TOKEN") or "cumWiIyGmxJXlf0BJUiUntcISrXUyrue"
+
 print(f"📂 Downloads folder: {os.path.abspath(DOWNLOAD_FOLDER)}")
 print(
     f"🍪 Cookies file: {'Exists' if os.path.exists(COOKIES_FILE) else 'Not found'}"
@@ -2860,6 +2864,88 @@ def upload_to_pixeldrain_alt(file_path, filename, q, api_key):
         q.put({"log": "DONE"})
 
 
+def upload_to_gofile(file_path, filename, q):
+    """Upload file to Gofile.io"""
+    try:
+        if not GOFILE_API_TOKEN:
+            q.put({"error": "Gofile API token not configured"})
+            q.put({"log": "DONE"})
+            return
+
+        q.put({"stage": "Getting Gofile upload server...", "percent": 10})
+
+        # Step 1: Get the best upload server
+        server_response = requests.get(
+            "https://api.gofile.io/getServer",
+            headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+            timeout=10
+        )
+        server_response.raise_for_status()
+        server_data = server_response.json()
+
+        if server_data.get("status") != "ok":
+            q.put({"error": f"Failed to get upload server: {server_data.get('status')}"})
+            q.put({"log": "DONE"})
+            return
+
+        upload_server = server_data["data"]["server"]
+        q.put({"stage": f"Got server '{upload_server}', uploading file...", "percent": 30})
+
+        # Step 2: Upload file to the server
+        file_size = os.path.getsize(file_path)
+        upload_url = f"https://{upload_server}.gofile.io/uploadFile"
+
+        with open(file_path, 'rb') as f:
+            files = {'file': (filename, f)}
+            headers = {
+                "Authorization": f"Bearer {GOFILE_API_TOKEN}"
+            }
+
+            # Track upload progress (simplified)
+            uploaded = [0]
+            
+            def update_progress():
+                # Simple progress simulation
+                for i in range(30, 90, 10):
+                    q.put({"stage": "Uploading to Gofile...", "percent": i})
+            
+            # Upload the file
+            response = requests.post(
+                upload_url,
+                files=files,
+                headers=headers,
+                timeout=600  # 10 minutes for large files
+            )
+
+        response.raise_for_status()
+        upload_result = response.json()
+
+        if upload_result.get("status") == "ok":
+            download_page = upload_result["data"]["downloadPage"]
+            file_id = upload_result["data"]["fileId"]
+            
+            q.put({"stage": "✅ Gofile Upload Complete!", "percent": 100})
+            q.put({
+                "log": f"Success! File uploaded to Gofile: {filename}",
+                "final_url": download_page
+            })
+            
+            # Store URL in session for display
+            from flask import session
+            session['last_upload_url'] = download_page
+        else:
+            q.put({"error": f"Upload failed: {upload_result.get('status', 'Unknown error')}"})
+            
+    except requests.exceptions.Timeout:
+        q.put({"error": "Upload timeout - file may be too large or connection is slow"})
+    except requests.exceptions.RequestException as e:
+        q.put({"error": f"Upload request failed: {str(e)}"})
+    except Exception as e:
+        q.put({"error": f"Gofile upload failed: {str(e)}"})
+    finally:
+        q.put({"log": "DONE"})
+
+
 def upload_to_4stream_alt(file_path, filename, q, api_key):
     try:
         if not api_key:
@@ -4092,6 +4178,7 @@ def list_files(current_path=""):
         <button onclick="batchUploadPixeldrainAlt()" class="upload" style="background-color: #3498db; margin-left:5px;">Upload to Pixeldrain 2</button>
         <button onclick="batchUpload4stream()" style="background-color: #e74c3c; margin-left:5px;">Upload to 4stream</button>
         <button onclick="batchUpload4streamAlt()" style="background-color: #ff6b6b; margin-left:5px;">Upload to 4stream 2</button>
+        <button onclick="batchUploadGofile()" style="background-color: #9b59b6; margin-left:5px;">Upload to Gofile</button>
         <button onclick="batchDownload()" style="margin-left:5px;">Download Selected (ZIP)</button>
         <button onclick="clearSelection()" style="margin-left:5px;">Clear Selection</button>
     </div>
@@ -4122,6 +4209,7 @@ def list_files(current_path=""):
                     <form method="POST" action="{{ url_for('upload_to_pixeldrain_file_alt') }}" style="display:inline;"><input type="hidden" name="filepath" value="{{ item.path }}"><button type="submit" class="upload" style="background-color: #3498db;">💾 Pixeldrain 2</button></form>
                     <form method="POST" action="{{ url_for('upload_to_4stream_file') }}" style="display:inline;"><input type="hidden" name="filepath" value="{{ item.path }}"><button type="submit" style="background-color: #e74c3c;">🎬 4stream</button></form>
                     <form method="POST" action="{{ url_for('upload_to_4stream_file_alt') }}" style="display:inline;"><input type="hidden" name="filepath" value="{{ item.path }}"><button type="submit" style="background-color: #ff6b6b;">🎬 4stream 2</button></form>
+                    <form method="POST" action="{{ url_for('upload_to_gofile_file') }}" style="display:inline;"><input type="hidden" name="filepath" value="{{ item.path }}"><button type="submit" style="background-color: #9b59b6;">📤 Gofile</button></form>
                     {% if item.is_media %}
                         <a href="{{ url_for('encode_page', filepath=item.path) }}" class="encode">Encode</a>
                         <a href="{{ url_for('trim_page', filepath=item.path) }}" class="trim">Trim</a>
@@ -4705,6 +4793,25 @@ def list_files(current_path=""):
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = '{{ url_for("batch_upload_4stream_alt") }}';
+        files.forEach(file => {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'files[]';
+            input.value = file;
+            form.appendChild(input);
+        });
+        document.body.appendChild(form);
+        form.submit();
+    }
+
+    function batchUploadGofile() {
+        const files = getSelectedFiles();
+        if (files.length === 0) { alert('No files selected'); return; }
+        if (!confirm(`Upload ${files.length} file(s) to Gofile?`)) return;
+
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '{{ url_for("batch_upload_gofile") }}';
         files.forEach(file => {
             const input = document.createElement('input');
             input.type = 'hidden';
@@ -5349,6 +5456,52 @@ def batch_upload_4stream_alt():
         download_started=True,
         current_path="")
 
+
+
+
+@app.route("/upload_to_gofile", methods=["POST"])
+@login_required
+def upload_to_gofile_file():
+    filepath = request.form.get("filepath")
+    if not filepath:
+        flash("File path is missing.", "error")
+        return redirect(url_for('list_files', current_path=""))
+    current_path = os.path.dirname(filepath)
+    if not os.path.exists(os.path.join(DOWNLOAD_FOLDER, filepath)):
+        flash("File not found.", "error")
+        return redirect(url_for('list_files', current_path=current_path))
+    full_path = os.path.join(DOWNLOAD_FOLDER, filepath)
+    filename = os.path.basename(filepath)
+    args = (full_path, filename, progress_queue)
+    start_task(upload_to_gofile, args)
+    return render_template_string(
+        FILE_OPERATION_TEMPLATE,
+        operation_title=f"Uploading to Gofile: {filename}",
+        download_started=True,
+        current_path=current_path)
+
+
+@app.route("/batch_upload_gofile", methods=["POST"])
+@login_required
+def batch_upload_gofile():
+    files = request.form.getlist("files[]")
+    if not files:
+        flash("No files selected.", "error")
+        return redirect(url_for('list_files', current_path=""))
+
+    def batch_upload_worker():
+        for filepath in files:
+            full_path = os.path.join(DOWNLOAD_FOLDER, filepath)
+            if os.path.exists(full_path):
+                filename = os.path.basename(filepath)
+                upload_to_gofile(full_path, filename, progress_queue)
+
+    start_task(batch_upload_worker, ())
+    return render_template_string(
+        FILE_OPERATION_TEMPLATE,
+        operation_title=f"Batch Uploading {len(files)} files to Gofile",
+        download_started=True,
+        current_path="")
 
 @app.route("/trim/<path:filepath>")
 def trim_page(filepath):
