@@ -3690,7 +3690,7 @@ def download_and_convert(url,
                 cookie_content = [
                     "# Netscape HTTP Cookie File",
                     f".gofile.io\tTRUE\t/\tTRUE\t{expiry}\taccountToken\t{GOFILE_API_TOKEN}",
-                    f"gofile.io\tTRUE\t/\tTRUE\t{expiry}\taccountToken\t{GOFILE_API_TOKEN}"
+                    f"gofile.io\tFALSE\t/\tTRUE\t{expiry}\taccountToken\t{GOFILE_API_TOKEN}"
                 ]
                 
                 with open(gofile_cookie_file, "w") as f:
