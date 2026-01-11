@@ -196,7 +196,155 @@ if not APP_PASSWORD:
     print("⚠️ WARNING: APP_PASSWORD not set. Using default '1234'. PLEASE SET THIS IN PRODUCTION.")
     APP_PASSWORD = "1234"
 
+# Admin username (hardcoded)
+ADMIN_USERNAME = "admin"
 
+# Authentication decorator
+from functools import wraps
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('authenticated'):
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# Login route
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        
+        if username == ADMIN_USERNAME and password == APP_PASSWORD:
+            session['authenticated'] = True
+            session.permanent = True  # Remember login
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('index'))
+        else:
+            flash("❌ Invalid username or password", "error")
+    
+    # Simple login page with popup styling
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Login - Video Downloader</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { 
+                font-family: 'Segoe UI', 'Roboto', sans-serif; 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            .login-box {
+                background: white;
+                padding: 40px;
+                border-radius: 16px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                width: 100%;
+                max-width: 400px;
+            }
+            h1 { 
+                font-size: 24px; 
+                margin-bottom: 10px; 
+                color: #1a1a1a;
+                text-align: center;
+            }
+            p { 
+                text-align: center; 
+                color: #666; 
+                margin-bottom: 30px; 
+                font-size: 14px;
+            }
+            label { 
+                display: block; 
+                font-size: 13px; 
+                font-weight: 600; 
+                color: #3a3a3a; 
+                margin-bottom: 6px; 
+            }
+            input[type="text"], input[type="password"] {
+                width: 100%;
+                padding: 12px;
+                margin-bottom: 16px;
+                border: 1px solid #d0d0d0;
+                border-radius: 8px;
+                font-size: 14px;
+                font-family: inherit;
+            }
+            input:focus {
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }
+            button {
+                width: 100%;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 12px;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.2s ease;
+            }
+            button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 6px 16px rgba(102, 126, 234, 0.3);
+            }
+            .flash-msg {
+                padding: 12px;
+                margin-bottom: 20px;
+                border-radius: 8px;
+                font-size: 13px;
+                background: rgba(220, 53, 69, 0.1);
+                color: #721c24;
+                border-left: 4px solid #dc3545;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="login-box">
+            <h1>🎬 Video Downloader</h1>
+            <p>Please sign in to continue</p>
+            
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="flash-msg">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            
+            <form method="POST">
+                <label>Username:</label>
+                <input type="text" name="username" value="admin" required autofocus>
+                
+                <label>Password:</label>
+                <input type="password" name="password" required>
+                
+                <button type="submit">Sign In</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """)
+
+# Logout route
+@app.route("/logout")
+def logout():
+    session.clear()
+    flash("✅ You have been logged out", "info")
+    return redirect(url_for('login'))
 
 
 # -----------------------------
@@ -3354,6 +3502,7 @@ def merge_files_route():
 
 
 @app.route("/")
+@login_required
 def index():
     if 'last_upload_url' in session:
         upload_url = session.pop('last_upload_url', None)
@@ -3374,6 +3523,7 @@ def index():
 
 
 @app.route("/", methods=["POST"])
+@login_required
 def index_post():
     action = request.form.get("action")
     form_data = {
@@ -3689,6 +3839,7 @@ def upload_folder():
 
 @app.route("/files/")
 @app.route("/files/<path:current_path>")
+@login_required
 def list_files(current_path=""):
     feedback_messages = {
         'last_upload_url':
