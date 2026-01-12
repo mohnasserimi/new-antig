@@ -38,6 +38,23 @@ import shutil
 import sys
 from urllib.parse import unquote, quote
 from datetime import timedelta
+import requests
+
+def get_gofile_website_token():
+    """Dynamically fetch the required X-Website-Token from Gofile's JS"""
+    try:
+        # Try config.js first as it's the primary location for appdata.wt
+        r = requests.get("https://gofile.io/dist/js/config.js", timeout=10)
+        m = re.search(r'appdata\.wt\s*=\s*["\']([^"\']+)["\']', r.text)
+        if m: return m.group(1)
+        
+        # Fallback to home page if not found in config.js
+        r = requests.get("https://gofile.io/", timeout=10)
+        m = re.search(r'wt\s*[:=]\s*["\']([^"\']+)["\']', r.text)
+        if m: return m.group(1)
+    except:
+        pass
+    return "4fd6sg89d7s6" # Hardcoded fallback if detection fails
 
 # --- ADD DENO TO PATH ---
 # Deno installs to ~/.deno/bin by default. 
@@ -3064,7 +3081,8 @@ def upload_to_gofile(file_path, filename, q):
         with open(file_path, 'rb') as f:
             files = {'file': (filename, f)}
             headers = {
-                "Authorization": f"Bearer {GOFILE_API_TOKEN}"
+                "Authorization": f"Bearer {GOFILE_API_TOKEN}",
+                "X-Website-Token": get_gofile_website_token()
             }
 
             # Track upload progress (simplified)
@@ -3095,9 +3113,15 @@ def upload_to_gofile(file_path, filename, q):
             # Construct direct link candidates
             # Gofile 'download/web' format is often more reliable for free users
             direct_link = None
-            if upload_server and file_id_rec:
+            
+            # Use the ACTUAL storage server from result, not the upload server
+            real_server = upload_server
+            if upload_result["data"].get("servers"):
+                real_server = upload_result["data"]["servers"][0]
+
+            if real_server and file_id_rec:
                 safe_url_name = quote(filename)
-                direct_link = f"https://{upload_server}.gofile.io/download/web/{file_id_rec}/{safe_url_name}"
+                direct_link = f"https://{real_server}.gofile.io/download/web/{file_id_rec}/{safe_url_name}"
                 q.put({"log": f"Captured File ID: {file_id_rec}"})
                 q.put({"log": f"Constructed Gofile link: {direct_link}"})
             
@@ -3411,39 +3435,65 @@ def download_file_directly(url,
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                     'Referer': referer if referer else 'https://gofile.io/',
-                    'Origin': 'https://gofile.io',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Connection': 'keep-alive'
+                    'Origin': 'https://gofile.io'
                 }
                 
-                # SPECIAL GOFILE BYPASS: Get a fresh guest token for direct downloads
+                # SPECIAL GOFILE BYPASS: Get tokens for direct downloads
                 if "gofile.io" in url:
                     try:
-                        q.put({"log": "Fetching Gofile guest token for direct download..."})
-                        token_resp = requests.post("https://api.gofile.io/accounts", headers=headers, timeout=10)
+                        q.put({"log": "Fetching Gofile security tokens..."})
+                        wt = get_gofile_website_token()
+                        headers['X-Website-Token'] = wt
+                        
+                        token_resp = requests.post("https://api.gofile.io/accounts", headers={
+                            'User-Agent': headers['User-Agent'],
+                            'Referer': 'https://gofile.io/',
+                            'X-Website-Token': wt
+                        }, timeout=5)
                         if token_resp.status_code == 200:
                             guest_token = token_resp.json().get("data", {}).get("token")
                             if guest_token:
                                 headers["Authorization"] = f"Bearer {guest_token}"
-                                headers["Cookie"] = f"accountToken={guest_token}"
-                                headers["wt-token"] = guest_token
-                                q.put({"log": "✅ Got Gofile guest token."})
+                                q.put({"log": f"✅ Got Gofile guest token: {guest_token[:5]}..."})
                     except Exception as te:
                         q.put({"log": f"Note: Failed to get Gofile guest token: {te}"})
 
-                with requests.get(url,
-                                  stream=True,
-                                  allow_redirects=True,
-                                  auth=auth_tuple,
-                                  headers=headers) as response:
+                # --- MANUAL REDIRECT LOOP (to preserve headers/auth) ---
+                current_url = url
+                response = None
+                
+                for jump in range(5):
+                    q.put({"log": f"Connecting to {current_url.split('/')[2]}..."})
+                    response = requests.get(current_url,
+                                         stream=True,
+                                         allow_redirects=False, # We handle redirects manually
+                                         auth=auth_tuple,
+                                         headers=headers,
+                                         timeout=30)
                     
+                    if response.status_code in [301, 302, 303, 307, 308]:
+                        location = response.headers.get('Location')
+                        if not location: break
+                        
+                        # Detect if we were redirected back to the Gofile landing page
+                        if "gofile.io/d/" in location and "/download/" not in location:
+                            q.put({"log": "⚠️ Block detected. Retrying with landing page referer..."})
+                            # Try to extract the landing page code from the location if it's there
+                            if "/d/" in location:
+                                headers["Referer"] = location
+                            
+                        current_url = location
+                        if not current_url.startswith('http'):
+                            current_url = "https://gofile.io" + current_url
+                        continue
+                    else:
+                        break
+                
+                if response:
                     response.raise_for_status()
-                    
-                    # Detect if we were redirected back to the Gofile landing page
-                    if "gofile.io/d/" in response.url:
-                        q.put({"log": f"DEBUG: Redirected to {response.url}"})
-                        raise ValueError("Gofile redirected to landing page. Direct download blocked. Try opening the link in browser.")
+                    # Final check: Did we end up on a landing page?
+                    if "gofile.io/d/" in response.url and "/download/" not in response.url:
+                         raise ValueError("Gofile redirected to landing page. Direct download blocked.")
 
                     # Download immediately while response is open
                     filename = "direct_download"
@@ -3672,37 +3722,6 @@ def download_and_convert(url,
         ]
         if use_cookies and os.path.exists(COOKIES_FILE):
             yt_dlp_cmd.extend(["--cookies", COOKIES_FILE])
-        
-        # SPECIAL GOFILE AUTH: Pass API token to yt-dlp if it's a Gofile link
-        gofile_cookie_file = None
-        if "gofile.io" in url and GOFILE_API_TOKEN:
-            try:
-                # Create a temporary Netscape cookie file for Gofile
-                import tempfile
-                import time
-                
-                fd, gofile_cookie_file = tempfile.mkstemp(suffix=".txt", prefix="gofile_cookies_")
-                os.close(fd)
-                
-                # Netscape cookie format: domain, flag, path, secure, expiration, name, value
-                # Expiration set to 1 year from now
-                expiry = int(time.time()) + 31536000
-                cookie_content = [
-                    "# Netscape HTTP Cookie File",
-                    f".gofile.io\tTRUE\t/\tTRUE\t{expiry}\taccountToken\t{GOFILE_API_TOKEN}",
-                    f"gofile.io\tFALSE\t/\tTRUE\t{expiry}\taccountToken\t{GOFILE_API_TOKEN}"
-                ]
-                
-                with open(gofile_cookie_file, "w") as f:
-                    f.write("\n".join(cookie_content) + "\n")
-                
-                # Use the new cookie file instead of headers
-                yt_dlp_cmd.extend(["--cookies", gofile_cookie_file])
-                yt_dlp_cmd.extend(["--add-header", f"Authorization:Bearer {GOFILE_API_TOKEN}"])
-                q.put({"log": "Using temporary Gofile cookie file for authentication."})
-            except Exception as ce:
-                q.put({"log": f"Warning: Failed to create Gofile cookie file: {ce}"})
-            
         run_command_with_progress(yt_dlp_cmd, "Downloading with yt-dlp...", q)
         q.put({"stage": "Download Complete", "percent": 100})
         found_files = [
@@ -3751,18 +3770,10 @@ def download_and_convert(url,
         if actual_tmp_path and os.path.exists(actual_tmp_path):
             try:
                 os.remove(actual_tmp_path)
-            except:
+            except OSError:
                 pass
-        
-        # Cleanup temporary Gofile cookie file
-        if gofile_cookie_file and os.path.exists(gofile_cookie_file):
-            try:
-                os.remove(gofile_cookie_file)
-            except:
-                pass
-                
-        current_process = None
-        q.put({"log": "DONE"})
+        if not (upload_pixeldrain or upload_gofile):
+            q.put({"log": "DONE"})
 
 
 def manual_merge_worker(url,
@@ -5788,25 +5799,32 @@ def gofile_manager():
         return render_template_string(GOFILE_MANAGER_TEMPLATE, items=history)
 
     try:
-        # Try to fetch remote files, but don't crash if it fails (notPremium)
+        # Fetch the dynamic Website Token
+        wt = get_gofile_website_token()
+        headers = {
+            "Authorization": f"Bearer {GOFILE_API_TOKEN}",
+            "X-Website-Token": wt
+        }
+
+        # Try to fetch remote files
         # 1. Get account ID from token
         id_resp = requests.get(
             "https://api.gofile.io/accounts/getid",
-            headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+            headers=headers,
             timeout=5
         )
         if id_resp.status_code == 200:
             account_id = id_resp.json()["data"]["id"]
             acc_resp = requests.get(
                 f"https://api.gofile.io/accounts/{account_id}",
-                headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+                headers=headers,
                 timeout=5
             )
             if acc_resp.status_code == 200:
                 root_folder_id = acc_resp.json()["data"]["rootFolder"]
                 cont_resp = requests.get(
                     f"https://api.gofile.io/contents/{root_folder_id}",
-                    headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+                    headers=headers,
                     timeout=5
                 )
                 if cont_resp.status_code == 200:
@@ -5849,7 +5867,10 @@ def gofile_delete():
         resp = requests.delete(
             "https://api.gofile.io/deleteContent",
             json={"contentsId": [content_id]},
-            headers={"Authorization": f"Bearer {GOFILE_API_TOKEN}"},
+            headers={
+                "Authorization": f"Bearer {GOFILE_API_TOKEN}",
+                "X-Website-Token": get_gofile_website_token()
+            },
             timeout=10
         )
         resp.raise_for_status()
@@ -5909,36 +5930,15 @@ def gofile_add_to_local():
         # Log for debugging
         print(f"DEBUG: Restoring Gofile from URL: {download_url}")
 
-        # Use YouTube Downloader logic (yt-dlp) for Gofile links
-        # This is more robust as yt-dlp handles Gofile's complex redirection and token logic
-        if "gofile.io" in download_url:
-            # If it's a direct link, try to use the landing page instead for yt-dlp
-            if "/download/" in download_url:
-                file_id = request.form.get("fileId")
-                if file_id:
-                    download_url = f"https://gofile.io/d/{file_id}"
-            
-            args = (
-                download_url,    # url
-                "b",             # video_id
-                None,            # audio_id
-                filename,        # filename
-                "none",          # codec
-                "", "", "", "", "", "", "", 
-                False,           # force_stereo
-                progress_queue,  # q
-                False,           # is_muxed
-                False,           # upload_pixeldrain
-                False            # upload_gofile
-            )
-            start_task(download_and_convert, args)
-        elif ".gofile.io/download/direct/" in download_url or ".gofile.io/download/web/" in download_url:
-            # Fallback for direct links that aren't recognized as gofile.io
+        # Check if it's a direct Gofile download link (bypasses yt-dlp 401 errors)
+        if ".gofile.io/download/direct/" in download_url or ".gofile.io/download/web/" in download_url:
+            # Use Direct Download (requests) for direct links
+            # Pass the landing page link as Referer to bypass Gofile protection
             landing_page = request.form.get("link") or "https://gofile.io/"
             args = (download_url, progress_queue, False, False, "", "", landing_page)
             start_task(download_file_directly, args)
         else:
-            # Standard yt-dlp logic
+            # Use YouTube Downloader logic (yt-dlp) for landing pages
             args = (
                 download_url,    # url
                 "b",             # video_id
